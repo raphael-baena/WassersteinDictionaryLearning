@@ -11,6 +11,7 @@ import numpy as np
 from functools import partial
 from scipy.optimize import fmin_l_bfgs_b as lbfgs
 import matplotlib.pyplot as plt
+import tensorflow_probability as tfp
 
 class WDL:
 
@@ -19,8 +20,8 @@ class WDL:
         self.set_pars(**kwargs)
         
     def set_defaults(self):
-        self.def_Tau = 0
-        self.def_Gamma = 7.
+        self.def_tau = 0
+        self.def_gamma = 7.
         self.def_n_iter_sink = 20
         self.def_factr = 1e7
         self.def_pgtol = 1e-5
@@ -45,8 +46,8 @@ class WDL:
 
         
     def set_pars(self,**kwargs):
-        self.Tau = tf.constant(kwargs.get('Tau', self._def_Tau))
-        self.Gamma = tf.constant(kwargs.get('Gamma', self._def_Gamma))
+        self.tau = tf.constant(kwargs.get('tau', self.def_tau))
+        self.gamma = tf.constant(kwargs.get('gamma', self.def_gamma),dtype=tf.float64)
         self.n_iter_sink = tf.constant(kwargs.get('n_iter_sink',self.def_n_iter_sink ))
         self.factr = tf.constant(kwargs.get('factr',  self.def_factr))
         self.pgtol = tf.constant(kwargs.get('pgtol', self.def_pgtol))
@@ -61,28 +62,28 @@ class WDL:
         self.wgt_0 =  kwargs.get("wgt_0 ", self.def_wgt_0 )
         self.wgt_init =  kwargs.get("wgt_init ", self.def_wgt_init )
         
-        self.n_process =  kwargs.get("n_process ", self.n_process )
+        self.n_process =  kwargs.get("n_process ", self.def_n_process )
     
-        self.def_Verbose = kwargs.get("Verbose ", self.Verbose )
-        self.def_savepath= kwargs.get("savepath ", self.savepath)
-        self.def_logpath= kwargs.get("logpath= ", self.logpath)
-        self.def_checkplots = kwargs.get("checkplots ", self.checkplots )
+        self.Verbose = kwargs.get("Verbose ", self.def_Verbose )
+        self.savepath= kwargs.get("savepath ", self.def_savepath)
+        self.logpath= kwargs.get("logpath= ", self.def_logpath)
+        self.checkplots = kwargs.get("checkplots ", self.def_checkplots )
 
         
         self.rho = kwargs.get('rho', self.def_rho )
         
-        self.Datapoint = tf.Variable(kwargs.get('DataPoint'))
+        self.Datapoint = tf.Variable(kwargs.get('Datapoint'))
         
         if kwargs.get('Cost') is None :
-            n, p = self.DataPoint.shape   
-            self.Cost  = tf.Variable(self.EuclidCost(int(np.sqrt(p)), int(np.sqrt(p)), 
-                                                     ivmed=False, timeit=True))
+            n, p = self.Datapoint.shape   
+            self.Cost  = tf.Variable(EuclidCost(int(np.sqrt(p)), int(np.sqrt(p)), 
+                                                     divmed=False, timeit=True))
         
         else :
-             self.Cost = tf.Variable(kwargs.get('Cost'))
+             self.Cost = tf.Variable(kwargs.get('Cost'),dtype=tf.float64)
             
-        self.Ker = tf.Variable(tf.math.exp(self.Cost/self.Gamma))
-        self.n_components = tf.Variable(kwargs.get('n_components'))
+        self.Ker = tf.constant(tf.math.exp(self.Cost/self.gamma))
+        self.n_components = tf.constant(kwargs.get('n_components'))
 
 
 
@@ -189,7 +190,7 @@ class WDL:
                 L-BFGS output dictionary.
         """  
 
-        n, p = self.DataPoint.shape
+        n, p = self.Datapoint.shape
 
         # INITIALIZATION
         if self.feat_0 is None:
@@ -211,30 +212,20 @@ class WDL:
                 w = (w.T / np.sum(w, axis=1)).T
         else:
             w = self.wgt_0
-        dicw0 = np.log(np.vstack((Ys.T,w))).flatten()
-        args = (self.Datapoint, self.gamma, self.Cost, self.n_components, self.n_iter_sinkhorn, self.tau, self.rho, self.varscale, 
-                self.unbalanced, self.loss, self.n_process, self.Verbose, self.savepath, self.logpath, self.checkplots)
-        x, f, dic = lbfgs(LBFGSFunc, dicw0, args=args, factr=factr, pgtol=pgtol, maxiter=maxiter)
-        print (dic)
-        print( 'FINAL ERROR:\t{}'.format(f))
-        return unwrap_rep(x.reshape(n+p,n_components), (n,p)), f, dic
+               
+            
+        dicw0 = tf.reshape(log10(tf.concat([tf.transpose(Ys),w],axis=0)),[-1])
+        #return dicw0
+        
+        #args = (self.Datapoint, self.gamma, self.Cost, self.n_components, self.n_iter_sink, self.tau, self.rho, self.varscale, 
+               # self.unbalanced, self.loss, self.n_process, self.Verbose, self.savepath, self.logpath, self.checkplots)
+        x, f, dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=self.maxiter)
+        #print (dic)
+        #print( 'FINAL ERROR:\t{}'.format(f))
+        return self.unwrap_rep(tf.reshape(x,(n+p,self.n_components)), (n,p)), f, dic
     
     
-    @tf.function
-    def EuclidCost(self,Nr, Nc, divmed=False, timeit=False, trunc=False, maxtol=745.13, truncval=745.13):
-        N = Nr * Nc
-        C = np.zeros((N,N))
-        for k1 in range(N):
-            for k2 in range(k1):
-                r1, r2 = int(float(k1) / Nc)+1, int(float(k2) / Nc)+1
-                c1, c2 = k1%Nc + 1, k2%Nc + 1
-                C[k1, k2] = (r1-r2)**2 + (c1-c2)**2
-                C[k2, k1] = C[k1, k2]
-        if divmed:
-            C /= np.median(C)
-        if trunc:
-            C[C>maxtol] = truncval
-        return C
+
 
 
 
@@ -258,7 +249,7 @@ class WDL:
          return tf.math.exp(newvar)/tf.math.reduce_sum(tf.math.exp(newvar))
      
     @tf.function
-    def unwrap_rep(dicweights, datashape):
+    def unwrap_rep(self,dicweights, datashape):
         n,p = datashape
         Ys, w = dicweights[:p,:], dicweights[p:,:]
         return Ys, w
@@ -277,28 +268,35 @@ class WDL:
     #bary = result[2][-1]
     
     @tf.function
-    def update():
+    def update(self):
+
     
         return None
     
-    varchange_Grads = tf.gradients(Loss, [self.Newvar_D,self.Newvar_lbda])
     
-    Grads = tf.gradients(Loss, [self.D,self.lbda])
+    
     
     
     
 
-    @tf.function
-    def Theano_wass_grad(self,Datapoint, D, lbda, Gamma, Cost, n_iter, Tau=0):
-        return [Loss]+Grads
-    
-    
+ 
     
     
     @tf.function
-    def varchange_Theano_wass_grad(self,Datapoint, Newvar_D, Newvar_lbda, Gamma, Cost, n_iter, Tau):
-        for i in range(n_iter):
-            a,b,p=self.sinkhorn_step(a,b,p,newvar_d,self.l)
+    def varchange_Theano_wass_grad(self,datapoint,wi):
+        
+        
+        a,b,p=tf.ones_like(datapoint),tf.ones_like(datapoint),tf.ones_like(datapoint[:,0])
+        Newvar_D, Newvar_lbda = self.varchange(datapoint),self.varchange(wi)
+        
+        
+        for i in range(self.n_iter):
+            a,b,p=self.sinkhorn_step(a,b,p,Newvar_D, Newvar_lbda,self.Ker,self.Tau)
+
+        self.bary=p
+      
+        Loss = self.Loss_func()
+        varchange_Grads = tf.gradients(Loss, [self.Newvar_D,self.Newvar_lbda])
         
         return [Loss]+varchange_Grads
     
@@ -316,7 +314,7 @@ class WDL:
            print("UNBALANCED")
         else:
             if loss=='L2':
-                return self.varchange_Theano_wass_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, tau)
+                return self.varchange_Theano_wass_grad(datapoint, wi)
           #  elif loss=='L1':
             #    return varchange_Theano_L1_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, tau)
            # elif loss=='KL':
@@ -328,34 +326,34 @@ class WDL:
     
     
     @tf.function
-    def LBFGSFunc(self,dicweights, X, gamma, C, n_components, n_iter_sinkhorn=20, 
-              tau=0, rho=float('inf'), varscale=100, 
-              unbalanced=False, loss='L2', n_process=4, 
-              Verbose=False, savepath='', logpath='', checkplots=False):
-        n, p = X.shape
-        dicweights = dicweights.reshape(n+p,n_components)
+    def LBFGSFunc(self,dicweights):
+        n, p = self.Datapoint.shape
+        dicweights = tf.reshape(dicweights,(n+p,self.n_components))
+        
         Ys, w = self.unwrap_rep(dicweights, (n,p))
         
-        if n_process>1:
-            pool = mp.Pool(n_process)
-            mp_grads = partial(self.mp_Theano_grad, Ys=Ys, gamma=gamma, C=C,
-                                    n_iter_sinkhorn=n_iter_sinkhorn, tau=tau, rho=rho,
-                                    unbalanced=unbalanced, loss=loss)
-            Xw = zip(X,w)
+        if self.n_process>1:
+            pool = mp.Pool(self.n_process)
+            mp_grads = partial(self.mp_Theano_grad, Ys=Ys, gamma=self.gamma, C=self.Cost,
+                                    n_iter_sinkhorn=self.n_iter_sink, tau=self.tau, rho=self.rho,
+                                    unbalanced=self.unbalanced, loss=self.loss)
+            Xw = zip( self.Datapoint,w) #will break
             res = pool.map(mp_grads, Xw)
             err = 0 
             fullgrad = np.zeros((dicweights.shape))
             for i, (this_err, grad, graw) in enumerate(res):
                 err += this_err
                 fullgrad[:p,:] += grad/n
-                fullgrad[p+i,:] = varscale*graw
+                fullgrad[p+i,:] = self.varscale*graw
             pool.close()
             pool.join()
         else:
             err = 0
             fullgrad = np.zeros((dicweights.shape))
-            for i,(datapoint,wi) in enumerate(zip(X,w)):
-                if unbalanced:
+            for i in range(self.Datapoint.shape[0]):
+                datapoint,wi = self.Datapoint[i],w[i]
+                
+                if self.unbalanced:
                 #    if loss=='L2':
                 #        this_err, grad, graw = unbal_varchange_wass_grad(datapoint, 
                 #                              Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
@@ -367,9 +365,8 @@ class WDL:
                                          #     Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
                     print("UNBALANCED")
                 else:
-                    if loss=='L2':
-                        this_err, grad, graw = self.varchange_Theano_wass_grad(datapoint, 
-                                              Ys, wi, gamma, C, n_iter_sinkhorn, tau)
+                    if self.loss=='L2':
+                        this_err, grad, graw = self.varchange_Theano_wass_grad(datapoint, wi)
                     #elif loss=='L1':
                    #     this_err, grad, graw = varchange_Theano_L1_grad(datapoint, 
                     #                          Ys, wi, gamma, C, n_iter_sinkhorn, tau)
@@ -378,7 +375,7 @@ class WDL:
                      #                         Ys, wi, gamma, C, n_iter_sinkhorn, tau)
                 err += this_err
                 fullgrad[:p,:] += grad/n
-                fullgrad[p+i,:] = varscale*graw
+                fullgrad[p+i,:] =self. varscale*graw
       #  if Verbose:
        #     info = 'Current Error: {} - Duration: {} - Time: {}:{}'.format(
        #                 err, time.time()-start, time.localtime()[3], time.localtime()[4])
@@ -386,14 +383,41 @@ class WDL:
       #          logging.info(info)
        #     else:
         #        print (info)
-        if savepath and self.LBFGSFunc.besterr>err:
+        if self.savepath and self.LBFGSFunc.besterr>err:
             self.LBFGSFunc.besterr = err
-            np.save(savepath+'dicweights.npy',dicweights)
-            if checkplots:
+            np.save(self.savepath+'dicweights.npy',dicweights)
+            if self.checkplots:
                 for i,yi in enumerate(alphatolbda(Ys.T)):
-                    plot_func(yi, savepath=savepath+'atom_{}.png'.format(i))
+                    plot_func(yi, savepath=self.savepath+'atom_{}.png'.format(i))
         return err, fullgrad.flatten()
-        
+
+
+@tf.function
+def log10(x):
+  numerator = tf.math.log(x)
+  denominator = tf.math.log(tf.constant(10, dtype=numerator.dtype))
+  return numerator / denominator
+
+
+@tf.function
+def EuclidCost(Nr, Nc, divmed=False, timeit=False, trunc=False, maxtol=745.13, truncval=745.13):
+    N = Nr * Nc
+    C = np.zeros((N,N))
+    for k1 in range(N):
+        for k2 in range(k1):
+            r1, r2 = int(float(k1) / Nc)+1, int(float(k2) / Nc)+1
+            c1, c2 = k1%Nc + 1, k2%Nc + 1
+            C[k1, k2] = (r1-r2)**2 + (c1-c2)**2
+            C[k2, k1] = C[k1, k2]
+    if divmed:
+        C /= np.median(C)
+    if trunc:
+        C[C>maxtol] = truncval
+    return C
+
+
+
+       
 def plot_func(flatarr, wind=False, savepath='', cmap='gist_stern'):
     sqrtN = int(np.sqrt(flatarr.shape[0]))
     if not wind:
