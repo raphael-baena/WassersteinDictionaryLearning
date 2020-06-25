@@ -29,7 +29,7 @@ class WDL:
        
         self.def_rho = float('inf')
         self.def_loss = 'L2'
-        self.def_maxiter =15000
+        self.def_maxiter =2
         
         self.def_Cost = None
         self.def_feat_0 = None 
@@ -88,110 +88,9 @@ class WDL:
 
     @tf.function
     def LBFGSDescent(self):
-        #self,X, n_components, rho=float('inf'), varscale=100, unbalanced=False, loss='L2',
-             #   feat_0=None, feat_init="random", wgt_0=None, wgt_init="uniform",
-#                n_process=1, Verbose=False, savepath='', logpath='', checkplots=False,
-             #   factr=1e7, pgtol=1e-05, maxiter=15000
-        """Compute Wasserstein dictionary and weights.
-    
-            Parameters
-            ----------
-            X : np.ndarray
-                Input data to learn the representation on.
-                
-            n_components : int
-                Number of desired atoms in the representation.
-                
-            gamma : float
-                Entropic penalty parameter.
-                
-            n_iter_sinkhorn : int
-                Number of 'Sinkhorn' iterations for barycenter computation.
-                
-            C : np.ndarray
-                Cost function for the ground metric. If None, assumes data are square images
-                flattened in np.flatten() convention and computes naturel Euclidean pixel distances.
-                
-            tau : float (<=0)
-                Heavyball parameter (see section 4.3. in Schmitz et al 2017). Default is 0, i.e. no
-                acceleration.
-                
-            rho : float (>=0)
-                Unbalanced KL trade-off parameter (see section 4.4. in Schmitz et al 2017): 
-                the smaller, the further from balanced OT we can stray. Ignored if unbalanced=False.
-                
-            varscale : float
-                Trade-off hyperparameter between dictionary and weight optimization (see 
-                end of section 3.1. in Schmitz et al 2017).
-                
-            unbalanced : bool
-                If True, learn Unbalanced Wasserstein dictionary (with KL divergence for marginals).
-                See section 4.4. in Schmitz et al 2017.
-                
-            loss : string
-                Which fitting loss to use for the data similarity term. Implemented options are
-                'L2' (default), 'L1' and 'KL'.
-                
-            feat_0 : np.ndarray or None
-                Initialization of the dictionary. If None (default), initialize it as prescribed
-                in feat_init.
-                
-            feat_init : str
-                How to initialize dictionary atoms. Implemented options are:
-                    - 'sampled': initialize each atom as a randomly drawn datapoint.
-                    - 'uniform': initialize each atom as a uniform histogram.
-                    - 'random' (default): intialize each atom as white gaussian noise.
-                Ignored if feat_0 is given.
-                
-            wgt_0 : np.ndarray or None
-                Initialization of the weights. If None (default), initialize it as prescribed
-                in wgt_init.
-                
-            wgt_init : str
-                How to initialize the weights. Implemented options are:
-                    - 'uniform': give constant equal weight to each atom.
-                    - 'random' (default): draw random initial weights.
-                Ignored if wgt_0 is given.
-                
-            n_process : int (deprecated)
-                If higher than 1, run several parallel batches. Not recommended as Theano
-                already parallelizes computation (in a much better way).
-            
-            Verbose : bool
-                Whether to print (or save to log) information as the learning goes on.
-                
-            savepath : str
-                Path to folder where results will be saved. If empty (default), results are not 
-                written to disk.
-                
-            logpath : str
-                Path to folder where logfile should be written. If empty (default), info is printed 
-                to stdout instead. Ignored if Verbose=False.
-                
-            checkplots : bool
-                If true, plots of atoms are saved (and overwritten each time). Assumes squared
-                images in np.flatten() convention.
-                
-            factr, pgtol, maxiter:
-                SciPy L-BFGS parameters. See: 
-                https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.optimize.fmin_l_bfgs_b.html
-            
-    
-            Returns
-            -------
-            (D,lbda) : tuple
-                Learned dictionary and weights.
-                
-            f : float
-                Final error achieved.
-                
-            dic : dictionary
-                L-BFGS output dictionary.
-        """  
 
         n, p = self.Datapoint.shape
 
-        # INITIALIZATION
         if self.feat_0 is None:
             if self.feat_init == "sampled":
                 Ys = np.empty((self.n_components, p))
@@ -216,22 +115,19 @@ class WDL:
         w = tf.cast(w,tf.float64)
         self.Ys = Ys
         dicw0 = tf.reshape(log10(tf.concat([tf.transpose(Ys),w],axis=0)),[-1])
-
-        #args = (self.Datapoint, self.gamma, self.Cost, self.n_components, self.n_iter_sink, self.tau, self.rho, self.varscale, 
-               # self.unbalanced, self.loss, self.n_process, self.Verbose, self.savepath, self.logpath, self.checkplots)
-        x, f, dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=self.maxiter)
-        #print (dic)
-        #print( 'FINAL ERROR:\t{}'.format(f))
-        return   None #self.unwrap_rep(tf.reshape(x,(n+p,self.n_components)), (n,p)), f, dic
-    
+        dicw0 = tf.Variable(dicw0)
+        dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=5)
+        return   dic
     
 
-
+ #x, f, dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=self.maxiter)
 
 
 
     @tf.function
     def sinkhorn_step(self,i,a,b,p,D,lbda):
+        #tf.math.add(i,1)
+        i = i+1
         newa = D/tf.linalg.matmul(self.Ker,b)
         a = a**self.tau * newa**(1.-self.tau)
         #a = Tau*a + (1-Tau)*newa
@@ -242,7 +138,7 @@ class WDL:
         P=tf.tile(P,[div.shape[1],1])
         newb = tf.divide(tf.transpose(P),div)
         b = b**self.tau * newb**(1.-self.tau)
-        tf.add(i,1)
+        
         return i,a,b,p,D,lbda
     
     @tf.function
@@ -286,41 +182,26 @@ class WDL:
         a,b,p =tf.ones_like(Ys),tf.ones_like(Ys),tf.ones_like(Ys[:,0])
         Newvar_D, Newvar_lbda = self.varchange(Ys),self.varchange(wi)
         i = 0
-        i,a,b,p,D,lbda = tf.while_loop(self.condition,self.sinkhorn_step,(i,a,b,p,Newvar_D, Newvar_lbda))
-        #for i in range(self.n_iter_sink):
-        #    a,b,p=self.sinkhorn_step(a,b,p,Newvar_D, Newvar_lbda,self.Ker,self.tau)
+        i,a,b,p,D,lbda = tf.while_loop(self.condition,self.sinkhorn_step,(i,a,b,p,Newvar_D, Newvar_lbda),maximum_iterations=20)
+      
             
         bary = p[-1]
-      
         Loss = self.Loss_func(datapoint,bary)
         varchange_Grads = tf.gradients(Loss, [Newvar_D,Newvar_lbda])
-        
-        return  [Loss]+varchange_Grads
+        return [Loss]+varchange_Grads
+    
+         
+        #Loss = self.Loss_func(datapoint,bary)
+        #varchange_Grads = tf.gradients(Loss, [Newvar_D,Newvar_lbda])
+    #  
     
     
-    @tf.function
-    def mp_Theano_grad(self,Xw, Ys, gamma, C, n_iter_sinkhorn, tau, rho, unbalanced, loss):
-        datapoint, wi = Xw
-        if unbalanced:
-           # if loss=='L2':
-            #    return unbal_varchange_wass_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-           # elif loss=='L1':
-           #     return unbal_varchange_L1_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-           # elif loss=='KL':
-           #     return unbal_varchange_KL_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-           print("UNBALANCED")
-        else:
-            if loss=='L2':
-                return self.varchange_Theano_wass_grad(datapoint, Ys, wi)
-          #  elif loss=='L1':
-            #    return varchange_Theano_L1_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, tau)
-           # elif loss=='KL':
-             #   return varchange_Theano_KL_grad(datapoint, Ys, wi, gamma, C, n_iter_sinkhorn, tau)
+
     
     
-    
-    
-    
+    @tf.function 
+    def vectorized_wass_grad(self,arg):
+        return tf.vectorized_map(self.varchange_Theano_wass_grad,arg)
     
     @tf.function
     def LBFGSFunc(self,dicweights):
@@ -329,67 +210,22 @@ class WDL:
         Ys,w = self.unwrap_rep(dicweights, (n,p))
         YS = tf.reshape(Ys,[1,Ys.shape[0],Ys.shape[1]])
         YS = tf.tile(YS,[n,1,1])
-        if self.n_process>1:
-            pool = mp.Pool(self.n_process)
-            mp_grads = partial(self.mp_Theano_grad, Ys=Ys, gamma=self.gamma, C=self.Cost,
-                                    n_iter_sinkhorn=self.n_iter_sink, tau=self.tau, rho=self.rho,
-                                    unbalanced=self.unbalanced, loss=self.loss)
-            Xw = zip( self.Datapoint,w) #will break
-            res = pool.map(mp_grads, Xw)
-            err = 0 
-            fullgrad = np.zeros((dicweights.shape))
-            for i, (this_err, grad, graw) in enumerate(res):
-                err += this_err
-                fullgrad[:p,:] += grad/n
-                fullgrad[p+i,:] = self.varscale*graw
-            pool.close()
-            pool.join()
+        err = 0
+        fullgrad = tf.zeros((dicweights.shape))
+        if self.unbalanced:
+            print("UNBALANCED")
         else:
-            err = 0
-            fullgrad = np.zeros((dicweights.shape))
-
-            #datapoint,wi = self.Datapoint[i],w[i]
-            
-            if self.unbalanced:
-            #    if loss=='L2':
-            #        this_err, grad, graw = unbal_varchange_wass_grad(datapoint, 
-            #                              Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-            #    elif loss=='L1':
-            #        this_err, grad, graw = unbal_varchange_L1_grad(datapoint, 
-            ##                              Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-             #   elif loss=='KL':
-             #       this_err, grad, graw = unbal_varchange_KL_grad(datapoint, 
-                                     #     Ys, wi, gamma, C, n_iter_sinkhorn, rho, tau)
-                print("UNBALANCED")
-            else:
-                if self.loss=='L2':
+            if self.loss=='L2':
+                for i in range(n):
+                    this_err, grad, graw = self.varchange_Theano_wass_grad((self.Datapoint[i],Ys,w[i]))
+                    err+=this_err
+                    fullgrad[:p,:] + =tf.cast(grad/n,tf.float32)
+                    fullgrad[p+i,:] = self.varscale*graw
                     
-                    #self.varchange_Theano_wass_grad((self.Datapoint[0],Ys,w[0]))
-                    this_err, grad, graw = tf.vectorized_map(self.varchange_Theano_wass_grad,(self.Datapoint,YS,w))
-                    #= self.varchange_Theano_wass_grad(datapoint, Ys,wi)
-                #elif loss=='L1':
-               #     this_err, grad, graw = varchange_Theano_L1_grad(datapoint, 
-                #                          Ys, wi, gamma, C, n_iter_sinkhorn, tau)
-               # elif loss=='KL':
-                 #   this_err, grad, graw = varchange_Theano_KL_grad(datapoint, 
-                 #                         Ys, wi, gamma, C, n_iter_sinkhorn, tau)
-            err =tf.math.reduce_sum( this_err)
-                #fullgrad[:p,:] += grad/n
-                #fullgrad[p+i,:] =self. varscale*graw
-      #  if Verbose:
-       #     info = 'Current Error: {} - Duration: {} - Time: {}:{}'.format(
-       #                 err, time.time()-start, time.localtime()[3], time.localtime()[4])
-       ##     if logpath:
-      #          logging.info(info)
-       #     else:
-        #        print (info)
-        #if self.savepath and self.LBFGSFunc.besterr>err:
-       #     self.LBFGSFunc.besterr = err
-       #     np.save(self.savepath+'dicweights.npy',tf.make_ndarray(tf.make_tensor_proto(dicweights)))
-       #     if self.checkplots:
-        #        for i,yi in enumerate(alphatolbda((tf.make_ndarray(Ys)).T)):
-          #          plot_func(yi, savepath=self.savepath+'atom_{}.png'.format(i))
-        return err #, fullgrad.flatten()
+        print(err)
+        return err ,fullgrad
+    #err =tf.math.reduce_sum( this_err)
+    #, fullgrad.flatten()
 
 
 @tf.function
