@@ -11,17 +11,20 @@ import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
 import tensorflow_probability as tfp
+from scipy.optimize import fmin_l_bfgs_b as lbfgs
+
 
 class WDL:
 
     def __init__(self,**kwargs):
         self.set_defaults()
         self.set_pars(**kwargs)
-        
+   
+   
     def set_defaults(self):
         self.def_tau = 0
         self.def_gamma = 7.
-        self.def_n_iter_sink = 20
+        self.def_n_iter_sink = 100
         self.def_factr = 1e7
         self.def_pgtol = 1e-5
         self.def_varscale = 100
@@ -43,14 +46,14 @@ class WDL:
         self.def_logpath=''
         self.def_checkplots = False,
 
-        
+   
     def set_pars(self,**kwargs):
         self.tau = kwargs.get('tau', self.def_tau)
         self.gamma = tf.constant(kwargs.get('gamma', self.def_gamma),dtype=tf.float64)
         self.n_iter_sink = tf.constant(kwargs.get('n_iter_sink',self.def_n_iter_sink ),dtype=tf.int32)
         self.factr = tf.constant(kwargs.get('factr',  self.def_factr))
         self.pgtol = tf.constant(kwargs.get('pgtol', self.def_pgtol))
-        self.varscale = tf.constant( kwargs.get('varscale',self.def_varscale ))
+        self.varscale = kwargs.get('varscale',self.def_varscale )
         self.unbalanced = kwargs.get('unbalanced', self.def_unbalanced )
         self.rho =  tf.constant(kwargs.get('rho', self.def_rho))
         self.loss = kwargs.get('loss', self.def_loss)
@@ -81,12 +84,13 @@ class WDL:
         else :
              self.Cost = tf.convert_to_tensor(kwargs.get('Cost'),dtype=tf.float64)
             
-        self.Ker = tf.constant(tf.math.exp(self.Cost/self.gamma))
+        self.Ker = tf.constant(tf.math.exp(-self.Cost/self.gamma))
         self.n_components = tf.constant(kwargs.get('n_components'),dtype =tf.int32)
-        self.LBFGSFunc.besterr = 0
 
 
-    @tf.function
+
+    
+    
     def LBFGSDescent(self):
 
         n, p = self.Datapoint.shape
@@ -113,11 +117,10 @@ class WDL:
         else:
             w = self.wgt_0
         w = tf.cast(w,tf.float64)
-        self.Ys = Ys
-        dicw0 = tf.reshape(log10(tf.concat([tf.transpose(Ys),w],axis=0)),[-1])
-        dicw0 = tf.Variable(dicw0)
-        dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=5)
-        return   dic
+        
+        dicw0 = tf.Variable(tf.reshape(log10(tf.concat([tf.transpose(Ys),w],axis=0)),[-1]))
+        dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, initial_position = dicw0, max_iterations=15000,parallel_iterations=10)
+        return   dic  #dic
     
 
  #x, f, dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, dicw0, max_iterations=self.maxiter)
@@ -126,19 +129,16 @@ class WDL:
 
     @tf.function
     def sinkhorn_step(self,i,a,b,p,D,lbda):
-        #tf.math.add(i,1)
-        i = i+1
-        newa = D/tf.linalg.matmul(self.Ker,b)
+        newa = D/tf.matmul(self.Ker,b)
         a = a**self.tau * newa**(1.-self.tau)
-        #a = Tau*a + (1-Tau)*newa
+     
     
-        p =  tf.math.reduce_prod(tf.matmul(tf.transpose(self.Ker),a)**lbda, axis=1)
+        p =  tf.math.reduce_prod(tf.pow(tf.matmul(tf.transpose(self.Ker),a),lbda), axis=1)
         div=tf.linalg.matmul(tf.transpose(self.Ker),a)
         P=tf.reshape(p,(1,p.shape[0]))
         P=tf.tile(P,[div.shape[1],1])
         newb = tf.divide(tf.transpose(P),div)
         b = b**self.tau * newb**(1.-self.tau)
-        
         return i,a,b,p,D,lbda
     
     @tf.function
@@ -154,42 +154,52 @@ class WDL:
     
     @tf.function
     def Loss_func(self,datapoint,bary): 
-        return  tf.nn.l2_loss(datapoint-bary)
-    # def varchangetehano(newvar):
-    #     return T.exp(newvar)/T.sum(T.exp(newvar))
-    
-    
-    ###Convert this
-    #result, updates = theano.scan(sinkhorn_step, outputs_info=[)], 
-                            #      non_sequences=[D,lbda,Ker,Tau], n_steps=n_iter)
-                            
-    #bary = result[2][-1]
-    
+        return  tf.nn.l2_loss(tf.math.subtract(datapoint,bary))
 
-    
     
     @tf.function
     def condition(self,i,*args):
         return tf.less(i, self.n_iter_sink)
 
  
-    
-    
+
     @tf.function
-    def varchange_Theano_wass_grad(self,arg):
-        
-        datapoint,Ys,wi = arg
+    def wass_grad(self,arg):
+        Ys,wi = arg
         a,b,p =tf.ones_like(Ys),tf.ones_like(Ys),tf.ones_like(Ys[:,0])
         Newvar_D, Newvar_lbda = self.varchange(Ys),self.varchange(wi)
         i = 0
-        i,a,b,p,D,lbda = tf.while_loop(self.condition,self.sinkhorn_step,(i,a,b,p,Newvar_D, Newvar_lbda),maximum_iterations=20)
-      
+        for n in range(self.n_iter_sink):
+          i,a,b,p,D,lbda = self.sinkhorn_step(i,a,b,p,Newvar_D, Newvar_lbda)
             
-        bary = p[-1]
-        Loss = self.Loss_func(datapoint,bary)
+            
+        return  p
+    @tf.function
+    def varchange_wass_grad(self,arg):
+        
+        datapoint,wi = arg
+        Ys=self.Ys
+        Newvar_D, Newvar_lbda = self.varchange(Ys),self.varchange(wi)
+        a,b,p =tf.ones_like(Newvar_D),tf.ones_like(Newvar_D),tf.ones_like(Newvar_D[:,0])
+        
+        i = 0
+        for n in range(self.n_iter_sink):
+          newa = Newvar_D/tf.matmul(self.Ker,b)
+          a = a**self.tau * newa**(1.-self.tau)
+        
+      
+          p =  tf.math.reduce_prod(tf.pow(tf.matmul(tf.transpose(self.Ker),a),Newvar_lbda), axis=1)
+          div=tf.linalg.matmul(tf.transpose(self.Ker),a)
+          P=tf.reshape(p,(1,p.shape[0]))
+          P=tf.tile(P,[div.shape[1],1])
+          newb = tf.divide(tf.transpose(P),div)
+          b = b**self.tau * newb**(1.-self.tau)
+
+        Loss = self.Loss_func(datapoint,p)
         varchange_Grads = tf.gradients(Loss, [Newvar_D,Newvar_lbda])
-        return [Loss]+varchange_Grads
-    
+       
+ 
+        return [Loss]+varchange_Grads    
          
         #Loss = self.Loss_func(datapoint,bary)
         #varchange_Grads = tf.gradients(Loss, [Newvar_D,Newvar_lbda])
@@ -197,12 +207,7 @@ class WDL:
     
     
 
-    
-    
-    @tf.function 
-    def vectorized_wass_grad(self,arg):
-        return tf.vectorized_map(self.varchange_Theano_wass_grad,arg)
-    
+#tf.vectorized_map(self.varchange_Theano_wass_grad,(self.Datapoint,YS,w))
     @tf.function
     def LBFGSFunc(self,dicweights):
         n, p = self.Datapoint.shape
@@ -210,24 +215,34 @@ class WDL:
         Ys,w = self.unwrap_rep(dicweights, (n,p))
         YS = tf.reshape(Ys,[1,Ys.shape[0],Ys.shape[1]])
         YS = tf.tile(YS,[n,1,1])
+        self.Ys = Ys
         err = 0
-        fullgrad = tf.zeros((dicweights.shape))
+        x,y = dicweights.shape
         if self.unbalanced:
             print("UNBALANCED")
         else:
             if self.loss=='L2':
-                for i in range(n):
-                    this_err, grad, graw = self.varchange_Theano_wass_grad((self.Datapoint[i],Ys,w[i]))
-                    err+=this_err
-                    fullgrad[:p,:] + =tf.cast(grad/n,tf.float32)
-                    fullgrad[p+i,:] = self.varscale*graw
-                    
-        print(err)
-        return err ,fullgrad
+                this_err,Vgrad,Vgraw = tf.map_fn(self.varchange_wass_grad,(self.Datapoint,w),dtype =[tf.float64,tf.float64,tf.float64])
+                grad = tf.cast(tf.math.reduce_sum(Vgrad,axis=0)/n,tf.float64)
+                #grad= tf.reshape(grad,(p,self.n_components))
+                Vgraw= tf.reshape(Vgraw,(n,self.n_components))
+                fullgrad = tf.concat((grad,tf.cast(Vgraw,tf.float64)),axis =0)
+                err = tf.math.reduce_sum(this_err)
+                
+  
+        tf.print(err)
+        return err ,tf.reshape(fullgrad,[-1])
     #err =tf.math.reduce_sum( this_err)
     #, fullgrad.flatten()
 
+# for i in range(n):
 
+#                     this_err, grad, graw = self.varchange_Theano_wass_grad((self.Datapoint[i],Ys,w[i]))
+#                     err+=this_err
+
+#                     fullgrad_part_1   = fullgrad_part_1 + tf.cast(grad/n,tf.float64)
+
+#                     fullgrad_part_2.append( tf.cast(graw,dtype=tf.float64))
 @tf.function
 def log10(x):
   numerator = tf.math.log(x)
