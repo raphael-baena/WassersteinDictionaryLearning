@@ -118,7 +118,7 @@ class WDL:
             w = self.wgt_0
         w = tf.cast(w,tf.float64)
         
-        dicw0 = tf.Variable(tf.reshape(log10(tf.concat([tf.transpose(Ys),w],axis=0)),[-1]))
+        dicw0 = tf.Variable(tf.reshape(tf.math.log(tf.concat([tf.transpose(Ys),w],axis=0)),[-1]))
         dic = tfp.optimizer.lbfgs_minimize(self.LBFGSFunc, initial_position = dicw0, max_iterations=15000,parallel_iterations=10)
         return   dic  #dic
     
@@ -195,8 +195,9 @@ class WDL:
           newb = tf.divide(tf.transpose(P),div)
           b = b**self.tau * newb**(1.-self.tau)
 
-        Loss = self.Loss_func(datapoint,p)
-        varchange_Grads = tf.gradients(Loss, [Newvar_D,Newvar_lbda])
+        Loss = tf.math.reduce_sum((datapoint-p)**2)*1/2
+
+        varchange_Grads = tf.gradients([Loss], [Newvar_D,Newvar_lbda])
        
  
         return [Loss]+varchange_Grads    
