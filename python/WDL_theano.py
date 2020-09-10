@@ -204,7 +204,7 @@ unbal_bary = unbal_bary / T.sum(unbal_bary)
 # Theano barycenter function
 Theano_wass_bary = theano.function([D,lbda,Gamma,Cost,n_iter, theano.In(Tau,value=0)], bary)
 
-Loss = 1./2*(Datapoint-bary).norm(2)**2
+Loss = 1./2*(  datapoint-bary).norm(2)**2
 KLLoss = T.sum(bary*T.log(bary/Datapoint - bary + Datapoint))
 L1 = (Datapoint-bary).norm(1)
 
